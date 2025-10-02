@@ -1,0 +1,63 @@
+### Invoice Analyzer API Tests
+### Base URL
+@baseUrl = http://localhost:8000
+
+### Health Check
+GET {{baseUrl}}/health
+Content-Type: application/json
+
+###
+
+### Get API Documentation
+GET {{baseUrl}}/docs
+
+###
+
+### Get OpenAPI Schema
+GET {{baseUrl}}/openapi.json
+
+###
+
+### Analyze Invoice - Test with sample image
+POST {{baseUrl}}/analyze-invoice
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="test_invoice.png"
+Content-Type: image/png
+
+< ./test_invoice.png
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+###
+
+### Analyze Invoice - Error case (no file)
+POST {{baseUrl}}/analyze-invoice
+Content-Type: multipart/form-data
+
+###
+
+### Analyze Invoice - Error case (invalid file type)
+POST {{baseUrl}}/analyze-invoice
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="test.txt"
+Content-Type: text/plain
+
+This is not an image file
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+###
+
+### Test with curl command (alternative)
+# curl -X POST "http://localhost:8000/analyze-invoice" \
+#      -H "accept: application/json" \
+#      -H "Content-Type: multipart/form-data" \
+#      -F "file=@test_invoice.png;type=image/png"
+
+###
+
+### Test Health with curl
+# curl -X GET "http://localhost:8000/health" \
+#      -H "accept: application/json"
