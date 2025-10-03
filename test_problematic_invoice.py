@@ -90,7 +90,7 @@ def test_api():
     filename = create_problematic_invoice()
     
     print("Sending request to API...")
-    url = "http://localhost:8003/analyze-invoice"
+    url = "http://localhost:8004/analyze-invoice"
     
     with open(filename, 'rb') as f:
         files = {'file': f}

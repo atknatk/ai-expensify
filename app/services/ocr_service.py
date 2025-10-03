@@ -144,6 +144,9 @@ class OCRService:
         base64_image = base64.b64encode(file_content).decode('utf-8')
         
         try:
+            if not self.openai_client:
+                raise Exception("OpenAI client not initialized")
+
             start_time = time.time()
             response = self.openai_client.chat.completions.create(
                 model=self.config.vision_model,
@@ -172,6 +175,8 @@ class OCRService:
 
             # Parse the response
             extracted_text = response.choices[0].message.content
+            if not extracted_text:
+                raise Exception("Empty response from OpenAI GPT-4 Vision")
 
             # Track cost for GPT-4 Vision
             self.cost_tracker.track_usage(
@@ -181,7 +186,7 @@ class OCRService:
                 output_text=extracted_text,
                 duration_ms=duration_ms
             )
-            
+
             # Convert to structured data using LLM
             structured_data = await self._parse_extracted_text(extracted_text)
             
@@ -294,6 +299,9 @@ class OCRService:
             logger.warning("Extracted text is not JSON, using LLM to parse")
 
             # Use cheaper model to structure the extracted text
+            if not self.openai_client:
+                raise Exception("OpenAI client not initialized")
+
             start_time = time.time()
             response = self.openai_client.chat.completions.create(
                 model=self.config.text_model,
@@ -336,17 +344,21 @@ class OCRService:
             )
             duration_ms = int((time.time() - start_time) * 1000)
 
+            # Parse JSON response
+            llm_response = response.choices[0].message.content
+            if not llm_response:
+                raise Exception("Empty response from OpenAI text model")
+
+            llm_response = llm_response.strip()
+
             # Track cost for text parsing
             self.cost_tracker.track_usage(
                 provider=ServiceProvider.OPENAI,
                 model_name=self.config.text_model,
                 input_text=f"Parse this invoice text:\n\n{extracted_text}",
-                output_text=response.choices[0].message.content,
+                output_text=llm_response,
                 duration_ms=duration_ms
             )
-
-            # Parse JSON response
-            llm_response = response.choices[0].message.content.strip()
             logger.info(f"LLM Raw Response: {llm_response[:500]}...")
 
             # Clean up the response (remove markdown code blocks if present)
