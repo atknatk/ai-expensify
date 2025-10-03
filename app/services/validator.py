@@ -347,15 +347,26 @@ class ValidationService:
             if item.total_price:
                 total_calculated += item.total_price
         
-        # Validate line items total vs invoice total
-        if invoice_data.total_amount and total_calculated > 0:
-            # Allow for small rounding differences and tax
-            difference = abs(invoice_data.total_amount - total_calculated)
-            if difference > invoice_data.total_amount * Decimal('0.1'):  # 10% tolerance
+        # Validate line items total vs subtotal (not total with tax)
+        if invoice_data.subtotal and total_calculated > 0:
+            # Compare line items total with subtotal (before tax)
+            difference = abs(invoice_data.subtotal - total_calculated)
+            if difference > invoice_data.subtotal * Decimal('0.05'):  # 5% tolerance
                 issues.append(ValidationIssue(
                     field="line_items_total",
                     issue_type="calculation_error",
-                    message="Sum of line items doesn't match invoice total (considering tax)",
+                    message="Sum of line items doesn't match subtotal",
+                    severity="info",
+                    suggested_fix="Verify line item totals calculation"
+                ))
+        elif invoice_data.total_amount and total_calculated > 0 and not invoice_data.subtotal:
+            # If no subtotal, compare with total but allow for tax
+            difference = abs(invoice_data.total_amount - total_calculated)
+            if difference > invoice_data.total_amount * Decimal('0.3'):  # 30% tolerance for tax
+                issues.append(ValidationIssue(
+                    field="line_items_total",
+                    issue_type="calculation_error",
+                    message="Sum of line items significantly different from invoice total",
                     severity="info",
                     suggested_fix="Verify line item totals and tax calculations"
                 ))

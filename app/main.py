@@ -164,6 +164,42 @@ async def analyze_invoice(
         logger.info("Phase 4: Final Summary Generation")
         final_result = await llm_service.generate_summary(validated_data)
 
+        # Check if summary recommends fallback
+        if (final_result.summary and
+            final_result.summary.get('processing_decision') and
+            final_result.summary.get('processing_decision', {}).get('method') == 'fallback_required' and
+            not use_fallback):  # Don't retry if already using fallback
+
+            logger.warning(f"Summary recommends fallback: {final_result.summary.get('processing_decision', {}).get('reason')}")
+            try:
+                # Retry with Textract
+                fallback_data = await ocr_service.extract_data(file_content, file.filename, use_fallback=True)
+                fallback_categorized = await categorization_service.categorize_expenses(fallback_data)
+                fallback_validated = await validation_service.validate_data(fallback_categorized)
+                fallback_validated.update_confidence_level()
+
+                # Generate summary for fallback data
+                fallback_result = await llm_service.generate_summary(fallback_validated)
+
+                # Use fallback if it's better (fewer validation issues or higher confidence)
+                fallback_issues = len(fallback_validated.validation_issues) if fallback_validated.validation_issues else 0
+                original_issues = len(validated_data.validation_issues) if validated_data.validation_issues else 0
+
+                if (fallback_issues < original_issues or
+                    fallback_validated.overall_confidence > validated_data.overall_confidence):
+                    logger.info(f"Fallback improved results: {fallback_issues} issues vs {original_issues}, confidence: {fallback_validated.overall_confidence:.2f}")
+                    validated_data = fallback_validated
+                    final_result = fallback_result
+                    if not validated_data.processing_metadata:
+                        validated_data.processing_metadata = {}
+                    validated_data.processing_metadata["fallback_used"] = True
+                    validated_data.processing_metadata["fallback_reason"] = "summary_recommendation"
+                else:
+                    logger.info("Fallback didn't improve results, using original")
+
+            except Exception as e:
+                logger.error(f"Summary-recommended fallback failed: {e}")
+
         # Add cost tracking metadata
         if hasattr(llm_service, 'cost_tracker') or hasattr(ocr_service, 'cost_tracker'):
             # Combine costs from both services

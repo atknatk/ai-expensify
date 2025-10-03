@@ -41,7 +41,9 @@ def validate_file_type(file: UploadFile) -> None:
     Raises:
         HTTPException: If file type is not supported
     """
-    if not file.content_type:
+    # Get content type (either from file or guess from filename)
+    content_type = file.content_type
+    if not content_type:
         # Try to guess content type from filename
         content_type, _ = mimetypes.guess_type(file.filename or '')
         if not content_type:
@@ -49,12 +51,11 @@ def validate_file_type(file: UploadFile) -> None:
                 status_code=400,
                 detail="Could not determine file type. Please upload a supported image or PDF file."
             )
-        file.content_type = content_type
-    
-    if file.content_type not in SUPPORTED_FILE_TYPES:
+
+    if content_type not in SUPPORTED_FILE_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {file.content_type}. "
+            detail=f"Unsupported file type: {content_type}. "
                    f"Supported types: {', '.join(sorted(SUPPORTED_FILE_TYPES))}"
         )
 
