@@ -26,7 +26,7 @@ class OCRService:
     """3-Tier OCR service: Ollama LLaVA -> OpenAI GPT-4 Vision -> AWS Textract."""
 
     def __init__(self):
-        """Initialize OCR service with 3-tier fallback system."""
+        """Initialize OCR service with dynamic 3-tier fallback system."""
         # Tier 2: OpenAI GPT-4 Vision
         if settings.openai_api_key:
             self.openai_client = OpenAI(api_key=settings.openai_api_key)
@@ -45,100 +45,202 @@ class OCRService:
             base_url=settings.ollama_base_url,
             timeout=settings.ollama_timeout
         )
-        
+
+        # Log tier configuration at startup
+        self._log_tier_configuration()
+
+    def _log_tier_configuration(self):
+        """Log the current OCR tier configuration at startup."""
+        try:
+            active_tiers = settings.get_active_tier_order()
+            enabled_tiers = settings.get_enabled_tiers()
+            tier_order = settings.get_tier_order()
+
+            logger.info("🔧 OCR Service Configuration:")
+            logger.info(f"  📋 Tier Order: {' → '.join(tier_order)}")
+            logger.info(f"  ✅ Enabled Tiers: {', '.join(enabled_tiers)}")
+            logger.info(f"  🎯 Active Tiers: {' → '.join(active_tiers)}")
+
+            # Log individual tier status
+            for tier in ["ollama", "openai", "textract"]:
+                enabled = settings.is_tier_enabled(tier)
+                threshold = settings.get_tier_confidence_threshold(tier)
+                status = "✅ ENABLED" if enabled else "❌ DISABLED"
+                logger.info(f"  {tier.upper()}: {status} (threshold: {threshold:.2f})")
+
+            # Log availability warnings
+            if "openai" in active_tiers and not self.openai_client:
+                logger.warning("⚠️ OpenAI tier is active but API key not configured")
+            if "ollama" in active_tiers:
+                logger.info(f"🚀 Ollama endpoint: {settings.ollama_base_url}")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to log tier configuration: {e}")
+
     async def extract_data(self, file_content: bytes, filename: Optional[str] = None, use_fallback: bool = False) -> InvoiceData:
         """
-        Extract invoice data using 3-tier fallback system:
-        Tier 1: Ollama LLaVA 7B (Primary - Free)
-        Tier 2: OpenAI GPT-4 Vision (Secondary - Low cost)
-        Tier 3: AWS Textract (Last resort - High accuracy)
+        Extract invoice data using dynamic 3-tier fallback system.
+
+        Tier order and enabled tiers are configurable via environment variables:
+        - OCR_TIER_ORDER: Defines execution order (e.g., "ollama,openai,textract")
+        - OCR_ENABLED_TIERS: Defines which tiers are active
+        - Individual tier flags: OLLAMA_ENABLED, OPENAI_OCR_ENABLED, TEXTRACT_ENABLED
 
         Args:
             file_content: Image file content as bytes
             filename: Original filename
-            use_fallback: Force skip to Tier 3 (Textract)
+            use_fallback: Force skip to last tier (usually Textract)
 
         Returns:
             InvoiceData: Extracted invoice data with tier info
 
         Raises:
-            Exception: If all tiers fail
+            Exception: If all active tiers fail
         """
         start_time = time.time()
 
-        # Check if this is a high-value invoice that should go directly to Textract
+        # Get active tier configuration
+        try:
+            active_tiers = settings.get_active_tier_order()
+            logger.info(f"🔧 Active OCR tiers: {' → '.join(active_tiers)}")
+        except ValueError as e:
+            logger.error(f"❌ OCR Configuration Error: {e}")
+            raise Exception(f"Invalid OCR configuration: {e}")
+
+        # Check if this is a high-value invoice that should go directly to last tier
         if use_fallback:
-            logger.info("Using AWS Textract (Tier 3) as explicitly requested")
-            return await self._extract_tier3_textract(file_content, filename, start_time, "explicit_request")
+            last_tier = active_tiers[-1] if active_tiers else "textract"
+            logger.info(f"Using {last_tier.upper()} as explicitly requested (use_fallback=True)")
+            return await self._extract_with_tier(last_tier, file_content, filename, start_time, "explicit_request")
 
-        # TIER 1: Try Ollama LLaVA first (Primary - Free)
-        if settings.ollama_enabled:
+        # Dynamic tier processing loop
+        failed_tiers = []
+
+        for tier_index, tier_name in enumerate(active_tiers, 1):
+            if not settings.is_tier_enabled(tier_name):
+                logger.info(f"⏭️ TIER {tier_index} DISABLED: {tier_name.upper()} is disabled, skipping")
+                continue
+
             try:
-                logger.info("🚀 TIER 1: Attempting OCR with Ollama LLaVA 7B")
-                result, confidence = await self._extract_with_ollama_llava(file_content, filename)
+                tier_emoji = self._get_tier_emoji(tier_name)
+                logger.info(f"{tier_emoji} TIER {tier_index}: Attempting OCR with {tier_name.upper()}")
 
-                if confidence >= settings.ollama_confidence_threshold:
-                    logger.info(f"✅ TIER 1 SUCCESS: Ollama confidence {confidence:.2f} >= {settings.ollama_confidence_threshold}")
-                    processing_time = int((time.time() - start_time) * 1000)
-                    result.processing_phases.append(
-                        ProcessingPhase(
-                            phase_name="OCR_Ollama_LLaVA",
-                            status="success",
-                            duration_ms=processing_time,
-                            confidence=confidence,
-                            details={
-                                "tier": 1,
-                                "method": "ollama_llava",
-                                "model": settings.ollama_model,
-                                "cost_estimate": 0.0
-                            }
-                        )
-                    )
+                result, confidence = await self._extract_with_tier(tier_name, file_content, filename, start_time, f"tier_{tier_index}")
+                threshold = settings.get_tier_confidence_threshold(tier_name)
+
+                if confidence >= threshold:
+                    logger.info(f"✅ TIER {tier_index} SUCCESS: {tier_name.upper()} confidence {confidence:.2f} >= {threshold:.2f}")
                     return result
                 else:
-                    logger.warning(f"⚠️ TIER 1 LOW CONFIDENCE: Ollama confidence {confidence:.2f} < {settings.ollama_confidence_threshold}, falling back to Tier 2")
+                    logger.warning(f"⚠️ TIER {tier_index} LOW CONFIDENCE: {tier_name.upper()} confidence {confidence:.2f} < {threshold:.2f}")
+                    failed_tiers.append(f"{tier_name}(low_confidence)")
 
-            except Exception as ollama_error:
-                logger.warning(f"❌ TIER 1 FAILED: Ollama LLaVA error: {str(ollama_error)}")
+            except Exception as tier_error:
+                logger.warning(f"❌ TIER {tier_index} FAILED: {tier_name.upper()} error: {str(tier_error)}")
+                failed_tiers.append(f"{tier_name}(error)")
+
+
+        # All tiers failed
+        processing_time = int((time.time() - start_time) * 1000)
+        error_msg = f"All {len(active_tiers)} OCR tiers failed: {', '.join(failed_tiers)}"
+        logger.error(f"❌ {error_msg}")
+
+        # Return empty result with error info
+        result = InvoiceData()
+        result.processing_phases.append(
+            ProcessingPhase(
+                phase_name="OCR_All_Tiers_Failed",
+                status="error",
+                duration_ms=processing_time,
+                confidence=0.0,
+                errors=[error_msg, f"Active tiers: {', '.join(active_tiers)}"]
+            )
+        )
+
+        raise Exception(error_msg)
+
+    def _get_tier_emoji(self, tier_name: str) -> str:
+        """Get emoji for tier visualization."""
+        emoji_map = {
+            "ollama": "🚀",
+            "openai": "🔄",
+            "textract": "🔧"
+        }
+        return emoji_map.get(tier_name.lower(), "🔍")
+
+    async def _extract_with_tier(self, tier_name: str, file_content: bytes, filename: Optional[str], start_time: float, context: str) -> Tuple[InvoiceData, float]:
+        """
+        Extract data using the specified tier.
+
+        Args:
+            tier_name: Name of the tier (ollama, openai, textract)
+            file_content: Image file content
+            filename: Original filename
+            start_time: Processing start time
+            context: Context for logging/tracking
+
+        Returns:
+            Tuple of (InvoiceData, confidence_score)
+
+        Raises:
+            Exception: If the tier extraction fails
+        """
+        tier_name = tier_name.lower()
+
+        if tier_name == "ollama":
+            result, confidence = await self._extract_with_ollama_llava(file_content, filename)
+
+            # Add processing phase info
+            processing_time = int((time.time() - start_time) * 1000)
+            result.processing_phases.append(
+                ProcessingPhase(
+                    phase_name="OCR_Ollama_LLaVA",
+                    status="success",
+                    duration_ms=processing_time,
+                    confidence=confidence,
+                    details={
+                        "tier": tier_name,
+                        "method": "ollama_llava",
+                        "model": settings.ollama_model,
+                        "cost_estimate": 0.0,
+                        "context": context
+                    }
+                )
+            )
+            return result, confidence
+
+        elif tier_name == "openai":
+            if not self.openai_client:
+                raise Exception("OpenAI client not available (API key not configured)")
+
+            result, confidence = await self._extract_with_gpt4_vision(file_content, filename)
+
+            # Add processing phase info
+            processing_time = int((time.time() - start_time) * 1000)
+            result.processing_phases.append(
+                ProcessingPhase(
+                    phase_name="OCR_OpenAI_GPT4_Vision",
+                    status="success",
+                    duration_ms=processing_time,
+                    confidence=confidence,
+                    details={
+                        "tier": tier_name,
+                        "method": "openai_gpt4_vision",
+                        "model": settings.vision_model,
+                        "cost_estimate": 0.002,
+                        "context": context
+                    }
+                )
+            )
+            return result, confidence
+
+        elif tier_name == "textract":
+            result = await self._extract_tier3_textract(file_content, filename, start_time, context)
+            # Textract method already adds processing phase, so we return with default confidence
+            return result, settings.textract_confidence_threshold
+
         else:
-            logger.info("⏭️ TIER 1 DISABLED: Ollama is disabled, skipping to Tier 2")
-
-        # TIER 2: Try OpenAI GPT-4 Vision (Secondary - Low cost)
-        if self.openai_client:
-            try:
-                logger.info("🔄 TIER 2: Attempting OCR with OpenAI GPT-4 Vision")
-                result, confidence = await self._extract_with_gpt4_vision(file_content, filename)
-
-                if confidence >= settings.openai_confidence_threshold:
-                    logger.info(f"✅ TIER 2 SUCCESS: OpenAI confidence {confidence:.2f} >= {settings.openai_confidence_threshold}")
-                    processing_time = int((time.time() - start_time) * 1000)
-                    result.processing_phases.append(
-                        ProcessingPhase(
-                            phase_name="OCR_OpenAI_GPT4_Vision",
-                            status="success",
-                            duration_ms=processing_time,
-                            confidence=confidence,
-                            details={
-                                "tier": 2,
-                                "method": "openai_gpt4_vision",
-                                "model": settings.vision_model,
-                                "cost_estimate": 0.002,
-                                "fallback_reason": "ollama_low_confidence" if settings.ollama_enabled else "ollama_disabled"
-                            }
-                        )
-                    )
-                    return result
-                else:
-                    logger.warning(f"⚠️ TIER 2 LOW CONFIDENCE: OpenAI confidence {confidence:.2f} < {settings.openai_confidence_threshold}, falling back to Tier 3")
-
-            except Exception as openai_error:
-                logger.warning(f"❌ TIER 2 FAILED: OpenAI GPT-4 Vision error: {str(openai_error)}")
-        else:
-            logger.warning("⏭️ TIER 2 UNAVAILABLE: OpenAI API key not configured, skipping to Tier 3")
-
-        # TIER 3: AWS Textract (Last resort - High accuracy)
-        logger.info("🔧 TIER 3: Using AWS Textract as last resort")
-        return await self._extract_tier3_textract(file_content, filename, start_time, "all_tiers_failed")
+            raise Exception(f"Unknown OCR tier: {tier_name}")
 
     async def _extract_with_ollama_llava(self, file_content: bytes, filename: Optional[str] = None) -> Tuple[InvoiceData, float]:
         """
