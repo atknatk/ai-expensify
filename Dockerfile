@@ -35,7 +35,7 @@ RUN poetry install --no-root --only=main
 
 # Copy application code
 COPY app/ ./app/
-COPY .env.example ./.env
+COPY .env ./.env
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app

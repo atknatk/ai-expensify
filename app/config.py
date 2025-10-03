@@ -24,7 +24,12 @@ class Settings(BaseSettings):
     use_alternative_llms: bool = False
     groq_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
-    ollama_base_url: str = "http://localhost:11434"
+
+    # Ollama Configuration (Tier 1 - Primary)
+    ollama_base_url: str = "http://192.168.0.201:11434"
+    ollama_model: str = "llava:7b"
+    ollama_timeout: int = 30
+    ollama_enabled: bool = True
     
     # AWS Configuration (Optional)
     aws_access_key_id: Optional[str] = None
@@ -45,11 +50,18 @@ class Settings(BaseSettings):
     max_retries: int = 3
     timeout_seconds: int = 30
 
-    # AI Processing Configuration
+    # AI Processing Configuration - 3-Tier Fallback System
+    # Tier 1: Ollama LLaVA confidence threshold
+    ollama_confidence_threshold: float = 0.80
+    # Tier 2: OpenAI GPT-4 Vision confidence threshold
+    openai_confidence_threshold: float = 0.75
+    # Tier 3: AWS Textract (always used as last resort)
+    high_value_threshold: float = 10000.0  # EUR - triggers direct Textract for critical invoices
+    enable_textract_fallback: bool = True
+
+    # Legacy settings (for backward compatibility)
     confidence_threshold: float = 0.80
     ocr_quality_threshold: float = 0.70
-    high_value_threshold: float = 10000.0
-    enable_textract_fallback: bool = True
     
     class Config:
         env_file = ".env"

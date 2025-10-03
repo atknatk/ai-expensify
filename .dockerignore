@@ -76,7 +76,7 @@ celerybeat-schedule
 *.sage.py
 
 # Environments
-.env
+# .env (commented out for Docker build)
 .venv
 env/
 venv/
